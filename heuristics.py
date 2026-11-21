@@ -128,10 +128,13 @@ def _is_ip_address(host: str) -> bool:
     return bool(re.match(r"^\d{1,3}(\.\d{1,3}){3}$", host or ""))
 
 
+_tld_extractor = tldextract.TLDExtract(suffix_list_urls=None)
+
+
 def _domain(url_str: str) -> str:
     if not url_str:
         return ""
-    ext = tldextract.extract(url_str)
+    ext = _tld_extractor(url_str)
     return (getattr(ext, "top_domain_under_public_suffix", None) or ext.registered_domain or "").lower()
 
 

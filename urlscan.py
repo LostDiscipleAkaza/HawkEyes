@@ -29,6 +29,18 @@ except ImportError:
 URLSCAN_BASE = "https://urlscan.io/api/v1"
 
 
+def _clean_error(e: Exception) -> str:
+    msg = str(e)
+    if isinstance(e, requests.exceptions.ConnectionError):
+        if "NameResolutionError" in msg or "Failed to resolve" in msg:
+            return "Could not resolve urlscan.io API (DNS/network unavailable)"
+        if "RemoteDisconnected" in msg or "Connection aborted" in msg:
+            return "urlscan.io closed connection without responding"
+    if isinstance(e, requests.exceptions.Timeout):
+        return "Connection to urlscan.io timed out"
+    return msg
+
+
 def check_urlscan(
     url: str,
     max_wait: float = 30.0,
@@ -115,7 +127,7 @@ def check_urlscan(
             "report_url": report_url,
         }
     except requests.RequestException as e:
-        return {"error": str(e)}
+        return {"error": _clean_error(e)}
 
 
 if __name__ == "__main__":

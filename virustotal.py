@@ -45,6 +45,18 @@ def _format_url_report(attrs: dict) -> dict:
     }
 
 
+def _clean_error(e: Exception) -> str:
+    msg = str(e)
+    if isinstance(e, requests.exceptions.ConnectionError):
+        if "NameResolutionError" in msg or "Failed to resolve" in msg:
+            return "Could not resolve VirusTotal API (DNS/network unavailable)"
+        if "RemoteDisconnected" in msg or "Connection aborted" in msg:
+            return "VirusTotal closed connection without responding"
+    if isinstance(e, requests.exceptions.Timeout):
+        return "Connection to VirusTotal timed out"
+    return msg
+
+
 def check_virustotal(url: str, timeout: float = 10.0, max_wait: float = 25.0) -> dict:
     """
     max_wait: how long (seconds) to poll a freshly-submitted URL before
@@ -148,7 +160,7 @@ def check_virustotal(url: str, timeout: float = 10.0, max_wait: float = 25.0) ->
                 }
         return {"error": str(e)}
     except requests.RequestException as e:
-        return {"error": str(e)}
+        return {"error": _clean_error(e)}
 
 
 if __name__ == "__main__":

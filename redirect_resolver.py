@@ -82,10 +82,13 @@ REDIRECT_QUERY_PARAMS = (
 )
 
 
+_tld_extractor = tldextract.TLDExtract(suffix_list_urls=None)
+
+
 def _domain(url_str: str) -> str:
     if not url_str:
         return ""
-    ext = tldextract.extract(url_str)
+    ext = _tld_extractor(url_str)
     return (getattr(ext, "top_domain_under_public_suffix", None) or ext.registered_domain or "").lower()
 
 
@@ -246,30 +249,157 @@ def _clean_error(e: Exception) -> str:
     return msg
 
 
+def _status_name(code: int) -> str:
+    names = {
+        301: "HTTP 301 (Moved Permanently)",
+        302: "HTTP 302 (Found / Temporary)",
+        303: "HTTP 303 (See Other)",
+        307: "HTTP 307 (Temporary Redirect)",
+        308: "HTTP 308 (Permanent Redirect)",
+        200: "HTTP 200 (OK)",
+    }
+    return names.get(code, f"HTTP {code}")
+
+
+def analyze_redirect_hops(hop_records: list, original_url: str, final_url: str, error: str = None) -> dict:
+    """
+    Performs deep security analysis on the observed redirect chain:
+      - Open redirect parameter exploitation
+      - Protocol downgrade (HTTPS -> HTTP)
+      - Intermediate domain hopping & cloaking
+      - Nested shorteners
+      - Client-side (meta / JS) redirection
+      - Redirect loops / excessive hops
+    """
+    flags = []
+    risk_score = 0
+    domains = []
+    seen_domains = set()
+
+    for hop in hop_records:
+        dom = hop.get("domain")
+        if dom and dom not in seen_domains:
+            domains.append(dom)
+            seen_domains.add(dom)
+
+    # 1. Check for protocol downgrade (HTTPS -> HTTP)
+    downgrade = False
+    saw_https = False
+    for hop in hop_records:
+        sch = hop.get("scheme", "").lower()
+        if sch == "https":
+            saw_https = True
+        elif sch == "http" and saw_https:
+            downgrade = True
+            break
+    if downgrade:
+        flags.append("Protocol downgrade detected: redirected from HTTPS to insecure plaintext HTTP")
+        risk_score += 25
+
+    # 2. Open redirect detection (query parameter forwarding across domain boundaries)
+    open_redirect_param = None
+    open_redirect_suspect = False
+    for i in range(len(hop_records) - 1):
+        cur_hop = hop_records[i]
+        next_hop = hop_records[i + 1]
+        cur_url = cur_hop.get("url", "")
+        next_url = next_hop.get("url", "")
+        cur_domain = cur_hop.get("domain", "")
+        next_domain = next_hop.get("domain", "")
+
+        if cur_domain and next_domain and cur_domain != next_domain:
+            parsed_q = urlparse(cur_url)
+            if parsed_q.query:
+                qs = parse_qs(parsed_q.query)
+                for param, values in qs.items():
+                    for v in values:
+                        v_unquoted = unquote(v).lower()
+                        if next_domain in v_unquoted or (next_url and next_url.lower() in v_unquoted):
+                            open_redirect_suspect = True
+                            open_redirect_param = param
+                            flags.append(
+                                f"Suspected open redirect: '{cur_domain}' forwarded to '{next_domain}' "
+                                f"via query parameter '{param}'"
+                            )
+                            risk_score += 30
+                            break
+                    if open_redirect_suspect:
+                        break
+
+    # 3. Intermediate domain hopping & daisy-chaining
+    distinct_domains = len(seen_domains)
+    if distinct_domains >= 3:
+        flags.append(f"Multi-domain hop chain across {distinct_domains} distinct domains ({', '.join(domains[:4])})")
+        risk_score += 15
+
+    # 4. Hop count analysis
+    hop_count = max(0, len(hop_records) - 1)
+    if hop_count >= 5:
+        flags.append(f"Excessive redirect chain length ({hop_count} hops) — strong indicator of evasion/cloaking")
+        risk_score += 20
+    elif hop_count >= 3:
+        flags.append(f"Daisy-chained redirects ({hop_count} hops)")
+        risk_score += 10
+
+    # 5. Nested shorteners
+    shorteners_in_chain = [d for d in domains if d in KNOWN_SHORTENERS]
+    if len(shorteners_in_chain) > 1:
+        flags.append(f"Nested URL shorteners detected ({' -> '.join(shorteners_in_chain)}) — layered obfuscation")
+        risk_score += 20
+
+    # 6. Client-side redirects (meta refresh / JS location)
+    client_redirects = [h for h in hop_records if "meta" in str(h.get("type", "")).lower() or "js" in str(h.get("type", "")).lower()]
+    has_client_redirect = len(client_redirects) > 0
+    if has_client_redirect:
+        flags.append("Employs client-side (meta-refresh / JavaScript) redirection to bypass static HTTP crawlers")
+        risk_score += 10
+
+    # 7. Loop / error
+    if error and "loop" in error.lower():
+        flags.append("Circular redirect loop detected")
+        risk_score += 20
+
+    return {
+        "hops": hop_records,
+        "hop_count": hop_count,
+        "distinct_domains": domains,
+        "distinct_domain_count": distinct_domains,
+        "protocol_downgrade": downgrade,
+        "open_redirect_suspect": open_redirect_suspect,
+        "open_redirect_param": open_redirect_param,
+        "has_client_redirect": has_client_redirect,
+        "shorteners_used": shorteners_in_chain,
+        "flags": flags,
+        "risk_score": min(risk_score, 60),
+    }
+
+
 def resolve_redirects(
     url: str, max_redirects: int = 15, timeout: float = 10.0, max_client_hops: int = 5
 ) -> dict:
     """
     Follows both real HTTP redirects AND client-side (meta-refresh / simple
-    JS `location=`) redirects, since many shorteners use an interstitial
-    page rather than a true 3xx - a plain HTTP client would otherwise
-    report "no redirect" while actually landing on the wrapper page
-    instead of the real destination.
-
-    Returns:
-        original_url: the URL as given
-        final_url: where it actually ends up after all redirects
-        redirect_chain: ordered list of every URL hit along the way
-        redirect_count: number of hops (HTTP + client-side combined)
-        was_redirected: bool
-        cross_domain: True if final_url's host differs from the original host
-        error: set if the request failed outright (timeout, DNS failure, WAF block, etc.)
+    JS `location=`) redirects, logging hop status codes and performing
+    deep redirect security analysis.
     """
     session = _build_session(max_redirects)
-    chain = [url]  # only ever grows for GENUINE hops (real redirects), not URL normalization
+    chain = [url]
     current = url
-    last_url = url  # tracks where we actually ended up, including harmless normalization
+    last_url = url
     seen = {url}
+
+    # Track structured hop records
+    u_init = urlparse(url)
+    hop_records = [{
+        "hop": 0,
+        "url": url,
+        "status_code": None,
+        "type": "Initial URL",
+        "domain": _domain(url),
+        "scheme": u_init.scheme,
+    }]
+
+    error = None
 
     try:
         while True:
@@ -281,19 +411,42 @@ def resolve_redirects(
                     timeout=timeout,
                     headers=DEFAULT_HEADERS,
                     stream=True,
-                    verify=False,  # see module docstring - resolving, not judging trust
+                    verify=False,
                 )
 
-            # Only count this as a hop if a real HTTP redirect actually occurred.
-            # Without that, resp.url can still differ from the request URL due
-            # to harmless normalization (e.g. "example.com" -> "example.com/"),
-            # which is NOT a redirect and shouldn't be reported as one.
+            # Record intermediate HTTP 3xx responses
             if resp.history:
                 for r in resp.history:
                     if r.url not in chain:
                         chain.append(r.url)
+                    # Add hop record if not already logged
+                    if not any(h["url"] == r.url for h in hop_records):
+                        r_u = urlparse(r.url)
+                        hop_records.append({
+                            "hop": len(hop_records),
+                            "url": r.url,
+                            "status_code": r.status_code,
+                            "type": _status_name(r.status_code),
+                            "domain": _domain(r.url),
+                            "scheme": r_u.scheme,
+                        })
                 if resp.url not in chain:
                     chain.append(resp.url)
+                if not any(h["url"] == resp.url for h in hop_records):
+                    r_u = urlparse(resp.url)
+                    hop_records.append({
+                        "hop": len(hop_records),
+                        "url": resp.url,
+                        "status_code": resp.status_code,
+                        "type": _status_name(resp.status_code),
+                        "domain": _domain(resp.url),
+                        "scheme": r_u.scheme,
+                    })
+            else:
+                # Update initial hop status code if single request
+                if hop_records and hop_records[0]["url"] == current:
+                    hop_records[0]["status_code"] = resp.status_code
+
             last_url = resp.url
 
             next_url = None
@@ -305,16 +458,24 @@ def resolve_redirects(
                 or "text/plain" in content_type
                 or "xml" in content_type
             )
+            client_type = None
             if is_html_content and client_hops_so_far < max_client_hops:
                 body = ""
                 try:
                     for chunk in resp.iter_content(chunk_size=8192):
                         body += chunk.decode("utf-8", "ignore")
-                        if len(body) >= 65536:  # plenty for headers and interstitial body
+                        if len(body) >= 65536:
                             break
                 except Exception:
                     body = ""
                 next_url = _extract_client_redirect(body, resp.url)
+                if next_url:
+                    if _META_REFRESH_RE.search(body):
+                        client_type = "Meta Refresh"
+                    elif _JS_REDIRECT_RE.search(body):
+                        client_type = "JavaScript Redirect"
+                    else:
+                        client_type = "Client Interstitial"
 
             resp.close()
 
@@ -322,6 +483,15 @@ def resolve_redirects(
                 break
             seen.add(next_url)
             chain.append(next_url)
+            n_u = urlparse(next_url)
+            hop_records.append({
+                "hop": len(hop_records),
+                "url": next_url,
+                "status_code": 200,
+                "type": client_type or "Client-side Redirect",
+                "domain": _domain(next_url),
+                "scheme": n_u.scheme,
+            })
             last_url = next_url
             current = next_url
 
@@ -330,6 +500,8 @@ def resolve_redirects(
         original_host = urlparse(url).hostname or ""
         final_host = urlparse(final_url).hostname or ""
 
+        analysis = analyze_redirect_hops(hop_records, url, final_url)
+
         return {
             "original_url": url,
             "final_url": final_url,
@@ -337,12 +509,15 @@ def resolve_redirects(
             "redirect_count": hop_count,
             "was_redirected": hop_count > 0,
             "cross_domain": original_host != final_host and bool(final_host),
+            "analysis": analysis,
         }
     except requests.TooManyRedirects:
+        error = f"Exceeded {max_redirects} redirects (possible redirect loop)"
         final_url = last_url
         hop_count = len(chain) - 1
         original_host = urlparse(url).hostname or ""
         final_host = urlparse(final_url).hostname or ""
+        analysis = analyze_redirect_hops(hop_records, url, final_url, error=error)
         return {
             "original_url": url,
             "final_url": final_url,
@@ -350,13 +525,16 @@ def resolve_redirects(
             "redirect_count": max(hop_count, max_redirects),
             "was_redirected": True,
             "cross_domain": original_host != final_host and bool(final_host),
-            "error": f"Exceeded {max_redirects} redirects (possible redirect loop)",
+            "error": error,
+            "analysis": analysis,
         }
     except requests.RequestException as e:
+        error = _clean_error(e)
         final_url = last_url
         hop_count = len(chain) - 1
         original_host = urlparse(url).hostname or ""
         final_host = urlparse(final_url).hostname or ""
+        analysis = analyze_redirect_hops(hop_records, url, final_url, error=error)
         return {
             "original_url": url,
             "final_url": final_url,
@@ -364,7 +542,8 @@ def resolve_redirects(
             "redirect_count": hop_count,
             "was_redirected": hop_count > 0,
             "cross_domain": original_host != final_host and bool(final_host),
-            "error": _clean_error(e),
+            "error": error,
+            "analysis": analysis,
         }
 
 

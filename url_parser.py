@@ -7,6 +7,8 @@ stage depends on.
 from urllib.parse import urlparse
 import tldextract
 
+_extractor = tldextract.TLDExtract(suffix_list_urls=None)
+
 
 def parse_url(raw_url: str) -> dict:
     url = raw_url.strip()
@@ -14,7 +16,7 @@ def parse_url(raw_url: str) -> dict:
         url = "http://" + url
 
     parsed = urlparse(url)
-    ext = tldextract.extract(url)
+    ext = _extractor(url)
 
     return {
         "original_url": url,
@@ -27,7 +29,7 @@ def parse_url(raw_url: str) -> dict:
         "subdomain": ext.subdomain,
         "domain": ext.domain,
         "suffix": ext.suffix,
-        "registered_domain": ext.registered_domain,
+        "registered_domain": getattr(ext, "top_domain_under_public_suffix", None) or ext.registered_domain,
     }
 
 

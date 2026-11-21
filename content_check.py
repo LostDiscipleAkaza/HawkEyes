@@ -36,12 +36,15 @@ _MEDIA_RE = re.compile(
 )
 
 
+_tld_extractor = tldextract.TLDExtract(suffix_list_urls=None)
+
+
 def _reg(url: str) -> str:
-    return tldextract.extract(url).registered_domain.lower()
+    return _tld_extractor(url).registered_domain.lower()
 
 
 def _label(url: str) -> str:
-    return tldextract.extract(url).domain.lower()
+    return _tld_extractor(url).domain.lower()
 
 
 def _read_limited(resp, limit: int) -> str:

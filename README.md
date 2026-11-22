@@ -1,4 +1,4 @@
-# 🦅 HawkEyes — Autonomous URL Threat Intelligence Engine
+# HawkEyes — Autonomous URL Threat Intelligence Engine
 
 ```
   ██╗  ██╗ █████╗ ██╗    ██╗██╗  ██╗███████╗██╗   ██╗███████╗███████╗
@@ -8,8 +8,8 @@
   ██║  ██║██║  ██║╚███╔███╔╝██║ ╚██╗███████╗   ██║   ███████╗███████║
   ╚═╝  ╚═╝╚═╝  ╚═╝ ╚══╝╚══╝ ╚═╝  ╚═╝╚══════╝   ╚═╝   ╚══════╝╚══════╝
   ┌─────────────────────────────────────────────────────────────────┐
-  │  🦅 H A W K E Y E S :: Advanced URL Threat Intelligence Radar  │
-  │  v2.0 • Autonomous Threat Hunting, Phishing & Fraud Engine       │
+  │  H A W K E Y E S :: Advanced URL Threat Intelligence Radar  │
+  │      Autonomous Threat Hunting, Phishing & Fraud Engine       
   └─────────────────────────────────────────────────────────────────┘
 ```
 

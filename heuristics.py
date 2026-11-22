@@ -4,6 +4,7 @@ A lightweight rules engine that flags structural red flags in the URL
 itself, with no external calls. Fast, offline, and catches a lot of
 low-effort phishing on its own.
 """
+import ipaddress
 import re
 
 SUSPICIOUS_TLDS = {
@@ -125,7 +126,85 @@ def _matches_domain_set(hostname: str, domains: set):
 
 
 def _is_ip_address(host: str) -> bool:
-    return bool(re.match(r"^\d{1,3}(\.\d{1,3}){3}$", host or ""))
+    """Detects whether host is a raw IPv4/IPv6 address or an obfuscated IP (dword, hex, octal)."""
+    if not host:
+        return False
+    h = host.strip("[]").strip()
+    if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", h):
+        return True
+    try:
+        ipaddress.ip_address(h)
+        return True
+    except ValueError:
+        pass
+    if h.isdigit():
+        try:
+            val = int(h)
+            if 0 <= val <= 0xFFFFFFFF:
+                return True
+        except ValueError:
+            pass
+    if h.lower().startswith("0x"):
+        try:
+            val = int(h, 16)
+            if 0 <= val <= 0xFFFFFFFF:
+                return True
+        except ValueError:
+            pass
+    parts = h.split(".")
+    if 2 <= len(parts) <= 4:
+        try:
+            for p in parts:
+                if p.lower().startswith("0x"):
+                    int(p, 16)
+                elif p.startswith("0") and len(p) > 1 and p.isdigit():
+                    int(p, 8)
+                elif p.isdigit():
+                    int(p)
+                else:
+                    return False
+            return True
+        except ValueError:
+            pass
+    return False
+
+
+def _is_obfuscated_ip(host: str) -> bool:
+    """Returns True if host is an obfuscated IP representation (dword, hex, octal)."""
+    if not host:
+        return False
+    h = host.strip("[]").strip()
+    if h.isdigit():
+        try:
+            val = int(h)
+            return 0 <= val <= 0xFFFFFFFF
+        except ValueError:
+            return False
+    if h.lower().startswith("0x"):
+        try:
+            val = int(h, 16)
+            return 0 <= val <= 0xFFFFFFFF
+        except ValueError:
+            return False
+    parts = h.split(".")
+    if 2 <= len(parts) <= 4:
+        has_obf = False
+        try:
+            for p in parts:
+                if p.lower().startswith("0x"):
+                    int(p, 16)
+                    has_obf = True
+                elif p.startswith("0") and len(p) > 1 and p.isdigit():
+                    int(p, 8)
+                    has_obf = True
+                elif p.isdigit():
+                    int(p)
+                else:
+                    return False
+            return has_obf
+        except ValueError:
+            return False
+    return False
 
 
 _tld_extractor = tldextract.TLDExtract(suffix_list_urls=None)
@@ -150,9 +229,15 @@ def score_heuristics(parsed: dict, redirect: dict = None) -> dict:
     registered_domain = parsed.get("registered_domain") or ""
 
     is_raw_ip = _is_ip_address(hostname)
+    is_obfuscated = _is_obfuscated_ip(hostname)
     if is_raw_ip:
-        flags.append("Hostname is a raw IP address")
-        score += 25
+        if is_obfuscated:
+            flags.append("Hostname uses obfuscated IP representation (dword/hex/octal encoding)")
+            score += 35
+            direct += 20
+        else:
+            flags.append("Hostname is a raw IP address")
+            score += 25
 
     if "@" in full_url:
         flags.append('URL contains "@" (classic redirect / masking trick)')

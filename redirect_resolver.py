@@ -17,6 +17,7 @@ discovered. So: resolve first, judge separately.
 """
 import html
 import re
+import time
 import warnings
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
@@ -24,6 +25,7 @@ import requests
 import tldextract
 import urllib3
 from requests.adapters import HTTPAdapter
+from ssrf_protection import is_safe_url
 
 try:
     from urllib3.util.retry import Retry
@@ -51,8 +53,10 @@ DEFAULT_HEADERS = {
 
 # Matches <meta http-equiv="refresh" content="0; url=https://real-site.com">
 # or <meta content="0; url=https://real-site.com" http-equiv="refresh">
+# Hardened against ReDoS by avoiding nested greedy/lazy backtracking patterns.
 _META_REFRESH_RE = re.compile(
-    r'<meta\s+[^>]*?(?:http-equiv=["\']?refresh["\']?[^>]*?content=["\']?([^"\'\s>]+.*?)|content=["\']?([^"\'\s>]+.*?)[^>]*?http-equiv=["\']?refresh["\']?)[^>]*?>',
+    r'<meta\s+[^>]*?http-equiv\s*=\s*["\']?refresh["\']?[^>]*?content\s*=\s*["\']?([^"\'>]+)["\']?'
+    r'|<meta\s+[^>]*?content\s*=\s*["\']?([^"\'>]+)["\']?[^>]*?http-equiv\s*=\s*["\']?refresh["\']?',
     re.IGNORECASE,
 )
 # Matches window.location = "..." / location.replace(...) / location.assign(...) / navigate(...)
@@ -401,8 +405,29 @@ def resolve_redirects(
 
     error = None
 
+    # SSRF Protection: validate initial URL before connecting
+    safe, reason = is_safe_url(url)
+    if not safe:
+        analysis = analyze_redirect_hops(hop_records, url, url, error=f"SSRF blocked: {reason}")
+        return {
+            "original_url": url,
+            "final_url": url,
+            "redirect_chain": [url],
+            "redirect_count": 0,
+            "was_redirected": False,
+            "cross_domain": False,
+            "error": f"SSRF blocked: {reason}",
+            "analysis": analysis,
+        }
+
     try:
         while True:
+            # Check current URL before requesting
+            safe_cur, reason_cur = is_safe_url(current)
+            if not safe_cur:
+                error = f"SSRF blocked on hop: {reason_cur}"
+                break
+
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 resp = session.get(
@@ -415,11 +440,17 @@ def resolve_redirects(
                 )
 
             # Record intermediate HTTP 3xx responses
+            ssrf_aborted = False
             if resp.history:
                 for r in resp.history:
+                    # Validate intermediate hop destination against SSRF
+                    safe_r, reason_r = is_safe_url(r.url)
+                    if not safe_r:
+                        error = f"SSRF blocked on redirect: {reason_r}"
+                        ssrf_aborted = True
+                        break
                     if r.url not in chain:
                         chain.append(r.url)
-                    # Add hop record if not already logged
                     if not any(h["url"] == r.url for h in hop_records):
                         r_u = urlparse(r.url)
                         hop_records.append({
@@ -430,6 +461,16 @@ def resolve_redirects(
                             "domain": _domain(r.url),
                             "scheme": r_u.scheme,
                         })
+                if ssrf_aborted:
+                    resp.close()
+                    break
+
+                safe_resp, reason_resp = is_safe_url(resp.url)
+                if not safe_resp:
+                    error = f"SSRF blocked on redirect landing: {reason_resp}"
+                    resp.close()
+                    break
+
                 if resp.url not in chain:
                     chain.append(resp.url)
                 if not any(h["url"] == resp.url for h in hop_records):
@@ -443,7 +484,6 @@ def resolve_redirects(
                         "scheme": r_u.scheme,
                     })
             else:
-                # Update initial hop status code if single request
                 if hop_records and hop_records[0]["url"] == current:
                     hop_records[0]["status_code"] = resp.status_code
 
@@ -461,8 +501,11 @@ def resolve_redirects(
             client_type = None
             if is_html_content and client_hops_so_far < max_client_hops:
                 body = ""
+                start_read_t = time.time()
                 try:
                     for chunk in resp.iter_content(chunk_size=8192):
+                        if time.time() - start_read_t > 5.0:  # Wall-clock read limit (Slowloris protection)
+                            break
                         body += chunk.decode("utf-8", "ignore")
                         if len(body) >= 65536:
                             break
@@ -470,7 +513,11 @@ def resolve_redirects(
                     body = ""
                 next_url = _extract_client_redirect(body, resp.url)
                 if next_url:
-                    if _META_REFRESH_RE.search(body):
+                    safe_client, reason_client = is_safe_url(next_url)
+                    if not safe_client:
+                        error = f"SSRF blocked on client redirect: {reason_client}"
+                        next_url = None
+                    elif _META_REFRESH_RE.search(body):
                         client_type = "Meta Refresh"
                     elif _JS_REDIRECT_RE.search(body):
                         client_type = "JavaScript Redirect"

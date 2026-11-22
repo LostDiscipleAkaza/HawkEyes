@@ -313,7 +313,8 @@ def export_threat_graph_html(graph: dict, output_file: str, title: str = "HawkEy
     Generates a standalone, beautiful interactive HTML graph with force-directed
     physics, zoom, pan, node dragging, and inspection panel.
     """
-    graph_json = json.dumps(graph, default=str)
+    # Safe JSON encoding: prevent script-tag breakouts (XSS prevention)
+    graph_json = json.dumps(graph, default=str).replace("</", "<\\/").replace("<!--", "<\\!--")
 
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
@@ -619,20 +620,37 @@ def export_threat_graph_html(graph: dict, output_file: str, title: str = "HawkEy
 
     function showNodeDetails(node) {{
       const infoBox = document.getElementById("node-info");
-      let html = `
-        <div class="detail-row"><span class="detail-label">ID:</span><span class="detail-value">${{node.id}}</span></div>
-        <div class="detail-row"><span class="detail-label">Type:</span><span class="detail-value" style="color:${{node.color}}">${{node.type.toUpperCase()}}</span></div>
-        <div class="detail-row"><span class="detail-label">Risk:</span><span class="detail-value">${{node.risk.toUpperCase()}}</span></div>
-        <div class="detail-row"><span class="detail-label">Label:</span><span class="detail-value">${{node.label}}</span></div>
-      `;
+      infoBox.textContent = "";
+
+      function createRow(labelText, valueText, color) {{
+        const row = document.createElement("div");
+        row.className = "detail-row";
+        const lSpan = document.createElement("span");
+        lSpan.className = "detail-label";
+        lSpan.textContent = labelText + ":";
+        const vSpan = document.createElement("span");
+        vSpan.className = "detail-value";
+        vSpan.textContent = valueText;
+        if (color) vSpan.style.color = color;
+        row.appendChild(lSpan);
+        row.appendChild(vSpan);
+        return row;
+      }}
+
+      infoBox.appendChild(createRow("ID", node.id || ""));
+      infoBox.appendChild(createRow("Type", (node.type || "").toUpperCase(), node.color));
+      infoBox.appendChild(createRow("Risk", (node.risk || "").toUpperCase(), (node.risk === "critical" || node.risk === "high") ? "#ef4444" : null));
+      infoBox.appendChild(createRow("Label", node.label || ""));
+
       if (node.details && Object.keys(node.details).length > 0) {{
-        html += '<hr style="border:0;border-top:1px solid #334155;margin:8px 0;">';
+        const hr = document.createElement("hr");
+        hr.style.cssText = "border:0;border-top:1px solid #334155;margin:8px 0;";
+        infoBox.appendChild(hr);
         for (const [k, v] of Object.entries(node.details)) {{
-          if (typeof v === "object") continue;
-          html += `<div class="detail-row"><span class="detail-label">${{k}}:</span><span class="detail-value">${{v}}</span></div>`;
+          if (typeof v === "object" && v !== null) continue;
+          infoBox.appendChild(createRow(k, String(v)));
         }}
       }}
-      infoBox.innerHTML = html;
     }}
   </script>
 </body>

@@ -113,6 +113,7 @@ URL parser
 | `cert_transparency.py` | **Certificate Transparency** | Searches crt.sh CT logs, calculates domain certificate longevity, tracks certificate churn (burst re-issuance), and discovers subdomains |
 | `threat_graph.py` | **Threat Relationship Graph** | Constructs an entity graph connecting URLs, domains, IPs, nameservers, TLS certs, target brands, and threat indicators; outputs ASCII trees and interactive HTML |
 | `history.py` | **Scan History** | SQLite database (`scan_history.db`) automatically recording all scans with timestamps, scores, verdicts, threats, and full JSON reports with CLI search & CSV/JSON export |
+| `ssrf_protection.py` | **SSRF & Anti-Abuse Shield** | Restricts outbound scanning to public routable addresses; blocks RFC 1918 private subnets, loopback, cloud metadata (169.254.169.254), and Dword/Hex IP encodings |
 | `tls_check.py` | **TLS Health** | Real TLS handshake, certificate validity, expiration countdown, and self-signed detection |
 | `dns_lookup.py` | **DNS Enumeration** | DNS record resolution (A, AAAA, TXT, MX, NS) |
 | `whois_lookup.py` | **WHOIS / RDAP** | WHOIS domain age and registrar intelligence |

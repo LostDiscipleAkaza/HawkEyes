@@ -13,6 +13,7 @@ often keep their JavaScript in a separate file.
 """
 import html
 import re
+import time
 import warnings
 from urllib.parse import urljoin, urlparse
 
@@ -21,6 +22,7 @@ import tldextract
 
 from heuristics import find_brand_in_text
 from redirect_resolver import DEFAULT_HEADERS, _clean_error
+from ssrf_protection import is_safe_url
 
 MAX_PAGE_BYTES = 262144
 MAX_SCRIPT_BYTES = 131072
@@ -47,12 +49,16 @@ def _label(url: str) -> str:
     return _tld_extractor(url).domain.lower()
 
 
-def _read_limited(resp, limit: int) -> str:
+def _read_limited(resp, limit: int, max_wall_time: float = 6.0) -> str:
     body = ""
+    start_time = time.time()
     try:
         for chunk in resp.iter_content(chunk_size=8192):
+            if time.time() - start_time > max_wall_time:
+                break
             body += chunk.decode("utf-8", "ignore")
             if len(body) >= limit:
+                body = body[:limit]
                 break
     except Exception:
         pass
@@ -104,6 +110,11 @@ def analyze_html(body: str, page_url: str, extra_js: str = "") -> dict:
 def check_content(url: str, timeout: float = 10.0) -> dict:
     if not url:
         return {"skipped": True}
+
+    safe, reason = is_safe_url(url)
+    if not safe:
+        return {"error": f"Content check aborted: {reason}", "skipped": True}
+
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -111,6 +122,12 @@ def check_content(url: str, timeout: float = 10.0) -> dict:
                 url, headers=DEFAULT_HEADERS, timeout=timeout,
                 stream=True, verify=False, allow_redirects=True,
             )
+
+        safe_final, reason_final = is_safe_url(resp.url)
+        if not safe_final:
+            resp.close()
+            return {"error": f"Content check aborted: landing URL {reason_final}", "skipped": True}
+
         ctype = resp.headers.get("Content-Type", "").lower()
         status = resp.status_code
         final_url = resp.url
@@ -118,7 +135,7 @@ def check_content(url: str, timeout: float = 10.0) -> dict:
             resp.close()
             return {"fetched": True, "status": status, "flags": [], "score": 0,
                     "note": f"Non-HTML content ({ctype.split(';')[0]}), not analyzed"}
-        body = _read_limited(resp, MAX_PAGE_BYTES)
+        body = _read_limited(resp, MAX_PAGE_BYTES, max_wall_time=timeout)
         resp.close()
     except requests.RequestException as e:
         return {"error": f"Could not fetch page content: {_clean_error(e)}"}
@@ -133,13 +150,16 @@ def check_content(url: str, timeout: float = 10.0) -> dict:
         script_url = urljoin(final_url, html.unescape(src))
         if urlparse(script_url).hostname != host:
             continue
+        safe_script, _ = is_safe_url(script_url)
+        if not safe_script:
+            continue
         seen += 1
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 sr = requests.get(script_url, headers=DEFAULT_HEADERS, timeout=timeout,
                                   stream=True, verify=False)
-            extra_js += _read_limited(sr, MAX_SCRIPT_BYTES)
+            extra_js += _read_limited(sr, MAX_SCRIPT_BYTES, max_wall_time=5.0)
             sr.close()
         except requests.RequestException:
             continue

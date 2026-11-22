@@ -8,6 +8,7 @@ Queries public Certificate Transparency (CT) logs (via crt.sh) to discover:
   - First-seen vs most-recent issuance dates
 """
 from datetime import datetime, timezone
+import time
 import requests
 
 try:
@@ -25,6 +26,10 @@ DEFAULT_HEADERS = {
     ),
     "Accept": "application/json",
 }
+
+# In-memory cache to prevent crt.sh rate-limiting and timeouts on repeated lookups
+_CT_CACHE = {}  # domain -> (timestamp, result_dict)
+_CT_CACHE_TTL = 900  # 15 minutes
 
 
 def _parse_iso(date_str: str):
@@ -69,6 +74,11 @@ def check_certificate_transparency(domain: str, timeout: float = 6.0) -> dict:
         error: str or None
     """
     clean_domain = (domain or "").strip().lower()
+    if clean_domain in _CT_CACHE:
+        ts, cached = _CT_CACHE[clean_domain]
+        if time.time() - ts < _CT_CACHE_TTL:
+            return cached
+
     if not clean_domain or clean_domain in ("localhost", "127.0.0.1"):
         return {
             "total_certs": 0,
@@ -115,7 +125,7 @@ def check_certificate_transparency(domain: str, timeout: float = 6.0) -> dict:
         entries = resp.json()
         if not entries or not isinstance(entries, list):
             flags.append("No Certificate Transparency logs found for this domain")
-            return {
+            res = {
                 "total_certs": 0,
                 "first_seen": None,
                 "last_seen": None,
@@ -129,6 +139,10 @@ def check_certificate_transparency(domain: str, timeout: float = 6.0) -> dict:
                 "risk_score": 5,
                 "error": None,
             }
+            if len(_CT_CACHE) > 500:
+                _CT_CACHE.clear()
+            _CT_CACHE[clean_domain] = (time.time(), res)
+            return res
 
         now = datetime.now(timezone.utc)
         earliest_dt = None
@@ -196,7 +210,7 @@ def check_certificate_transparency(domain: str, timeout: float = 6.0) -> dict:
             flags.append(f"High certificate churn: {recent_7d} certificates issued in the past 7 days")
             risk_score += 15
 
-        return {
+        res = {
             "total_certs": len(entries),
             "first_seen": earliest_dt.isoformat() if earliest_dt else None,
             "last_seen": latest_dt.isoformat() if latest_dt else None,
@@ -210,6 +224,10 @@ def check_certificate_transparency(domain: str, timeout: float = 6.0) -> dict:
             "risk_score": min(risk_score, 40),
             "error": None,
         }
+        if len(_CT_CACHE) > 500:
+            _CT_CACHE.clear()
+        _CT_CACHE[clean_domain] = (time.time(), res)
+        return res
 
     except requests.RequestException as e:
         return {

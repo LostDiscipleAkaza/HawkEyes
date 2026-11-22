@@ -22,9 +22,12 @@ def _get_db_path(custom_path: str = None) -> str:
 
 def init_db(db_path: str = None):
     path = _get_db_path(db_path)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=10.0)
     try:
         cursor = conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL;")
+        cursor.execute("PRAGMA busy_timeout=5000;")
+        cursor.execute("PRAGMA synchronous=NORMAL;")
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS scans (
@@ -44,6 +47,8 @@ def init_db(db_path: str = None):
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_scans_domain ON scans(domain)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_scans_created_at ON scans(created_at)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_scans_verdict ON scans(verdict)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_scans_input_url ON scans(input_url)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_scans_final_url ON scans(final_url)")
         conn.commit()
     finally:
         conn.close()
@@ -139,9 +144,15 @@ def save_scan(result: dict, db_path: str = None) -> int:
     raw_json = json.dumps(result, default=str)
     created_at = datetime.now(timezone.utc).isoformat()
 
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=10.0)
     try:
         cursor = conn.cursor()
+        # Auto-prune oldest records if history exceeds 25,000 scans
+        cursor.execute("SELECT COUNT(*) FROM scans")
+        count_row = cursor.fetchone()
+        if count_row and count_row[0] >= 25000:
+            cursor.execute("DELETE FROM scans WHERE id IN (SELECT id FROM scans ORDER BY id ASC LIMIT 1000)")
+
         cursor.execute(
             """
             INSERT INTO scans (created_at, input_url, final_url, domain, ip, risk_score, verdict, threats, raw_json)
@@ -160,7 +171,7 @@ def list_scans(limit: int = 20, offset: int = 0, db_path: str = None) -> list:
     init_db(db_path)
     path = _get_db_path(db_path)
 
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=10.0)
     try:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -183,7 +194,7 @@ def get_scan(scan_id: int, db_path: str = None) -> dict:
     init_db(db_path)
     path = _get_db_path(db_path)
 
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=10.0)
     try:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -207,7 +218,7 @@ def search_scans(query: str, limit: int = 20, db_path: str = None) -> list:
     path = _get_db_path(db_path)
     q = f"%{query.strip()}%"
 
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=10.0)
     try:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()

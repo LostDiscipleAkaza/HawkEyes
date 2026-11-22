@@ -30,6 +30,8 @@ from homoglyph import detect_homoglyphs
 from phishing_detector import analyze_phishing
 from redirect_resolver import analyze_redirect_hops
 from safe_browsing import check_safe_browsing
+from ssrf_protection import is_private_or_reserved_ip, is_safe_url
+from heuristics import score_heuristics
 from threat_graph import (
     build_threat_graph,
     export_threat_graph_dot,
@@ -317,6 +319,88 @@ class TestThreatGraph(unittest.TestCase):
                 content = f.read()
             self.assertIn("Threat Relationship Graph", content)
             self.assertIn("canvas", content)
+        finally:
+            if os.path.exists(html_path):
+                os.remove(html_path)
+
+
+class TestSSRFProtection(unittest.TestCase):
+    def test_private_and_loopback_ips(self):
+        self.assertTrue(is_private_or_reserved_ip("127.0.0.1"))
+        self.assertTrue(is_private_or_reserved_ip("10.0.0.1"))
+        self.assertTrue(is_private_or_reserved_ip("172.16.0.1"))
+        self.assertTrue(is_private_or_reserved_ip("192.168.1.1"))
+        self.assertTrue(is_private_or_reserved_ip("169.254.169.254"))
+        self.assertTrue(is_private_or_reserved_ip("::1"))
+        self.assertFalse(is_private_or_reserved_ip("8.8.8.8"))
+        self.assertFalse(is_private_or_reserved_ip("1.1.1.1"))
+
+    def test_is_safe_url_blocks_internal_destinations(self):
+        safe, reason = is_safe_url("http://127.0.0.1:8080/admin")
+        self.assertFalse(safe)
+        self.assertIn("prohibited", reason.lower())
+
+        safe, reason = is_safe_url("http://169.254.169.254/latest/meta-data/")
+        self.assertFalse(safe)
+        self.assertIn("prohibited", reason.lower())
+
+        safe, reason = is_safe_url("http://localhost:5000/")
+        self.assertFalse(safe)
+        self.assertIn("prohibited", reason.lower())
+
+        # Obfuscated Dword 2130706433 == 127.0.0.1
+        safe, reason = is_safe_url("http://2130706433/")
+        self.assertFalse(safe)
+
+        # Hex 0x7f000001 == 127.0.0.1
+        safe, reason = is_safe_url("http://0x7f000001/")
+        self.assertFalse(safe)
+
+
+class TestHeuristicsObfuscatedIP(unittest.TestCase):
+    def test_dword_ip_heuristics(self):
+        parsed = parse_url("http://2130706433/login")
+        res = score_heuristics(parsed)
+        self.assertTrue(any("obfuscated IP" in f for f in res["flags"]))
+        self.assertGreaterEqual(res["score"], 35)
+
+    def test_hex_ip_heuristics(self):
+        parsed = parse_url("http://0x7f000001/verify")
+        res = score_heuristics(parsed)
+        self.assertTrue(any("obfuscated IP" in f for f in res["flags"]))
+        self.assertGreaterEqual(res["score"], 35)
+
+    def test_standard_ip_heuristics(self):
+        parsed = parse_url("http://93.184.216.34/index.html")
+        res = score_heuristics(parsed)
+        self.assertTrue(any("raw IP address" in f for f in res["flags"]))
+        self.assertFalse(any("obfuscated IP" in f for f in res["flags"]))
+
+
+class TestThreatGraphDOMSecurity(unittest.TestCase):
+    def test_html_export_escapes_script_breakouts(self):
+        malicious_scan = {
+            "input_url": "http://evil.com/</script><script>alert(1)</script>",
+            "parsed": {
+                "original_url": "http://evil.com/</script><script>alert(1)</script>",
+                "hostname": "evil.com",
+                "registered_domain": "evil.com",
+            },
+            "redirect": {"was_redirected": False},
+            "dns": {},
+            "tls": {},
+            "phishing": {"is_phishing": False},
+        }
+        graph = build_threat_graph(malicious_scan)
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+            html_path = f.name
+        try:
+            export_threat_graph_html(graph, html_path)
+            with open(html_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            # Must NOT contain raw unescaped closing script tag inside the JSON block
+            self.assertNotIn("</script><script>alert(1)</script>", content)
+            self.assertIn("<\\/script>", content)
         finally:
             if os.path.exists(html_path):
                 os.remove(html_path)

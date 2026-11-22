@@ -82,7 +82,10 @@ def run_pipeline(
     dns_result = lookup_dns(hostname, registered_domain=registered_domain)
 
     # 4. TLS & Certificate Transparency
-    tls_result = check_tls(hostname)
+    tls_port = parsed.get("port")
+    if not tls_port or (parsed.get("scheme") == "http" and tls_port == 80):
+        tls_port = 443
+    tls_result = check_tls(hostname, port=tls_port)
     ct_result = check_certificate_transparency(registered_domain) if registered_domain else {"total_certs": 0, "flags": []}
 
     # 5. WHOIS

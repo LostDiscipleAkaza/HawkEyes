@@ -22,12 +22,19 @@ def _probe_untrusted_cert(hostname: str, port: int = 443, timeout: float = 5.0) 
         fd, tmp = tempfile.mkstemp(suffix=".pem")
         with os.fdopen(fd, "w") as f:
             f.write(pem)
+        decoded = {}
         try:
             import _ssl
-            decoded = _ssl._test_decode_cert(tmp)
+            if hasattr(_ssl, "_test_decode_cert"):
+                decoded = _ssl._test_decode_cert(tmp)
+        except Exception:
+            decoded = {}
         finally:
             if os.path.exists(tmp):
-                os.remove(tmp)
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
 
         issuer = _flatten(decoded.get("issuer"))
         subject = _flatten(decoded.get("subject"))

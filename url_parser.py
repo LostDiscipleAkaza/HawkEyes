@@ -18,6 +18,9 @@ def parse_url(raw_url: str) -> dict:
     parsed = urlparse(url)
     ext = _extractor(url)
 
+    top_domain = getattr(ext, "top_domain_under_public_suffix", None)
+    reg_domain = top_domain if top_domain is not None else getattr(ext, "registered_domain", "")
+
     return {
         "original_url": url,
         "scheme": parsed.scheme,
@@ -29,7 +32,7 @@ def parse_url(raw_url: str) -> dict:
         "subdomain": ext.subdomain,
         "domain": ext.domain,
         "suffix": ext.suffix,
-        "registered_domain": getattr(ext, "top_domain_under_public_suffix", None) or ext.registered_domain,
+        "registered_domain": reg_domain,
     }
 
 

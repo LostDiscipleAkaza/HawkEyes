@@ -82,7 +82,7 @@ def check_safe_browsing(url: str, timeout: float = 6.0) -> dict:
 
     payload = {
         "client": {
-            "clientId": "url-scanner-cli",
+            "clientId": "hawkeyes-threat-scanner",
             "clientVersion": "2.0.0",
         },
         "threatInfo": {

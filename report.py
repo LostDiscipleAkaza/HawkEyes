@@ -60,7 +60,7 @@ def format_report(result: dict) -> str:
     color = VERDICT_COLORS.get(risk["verdict"], RESET)
 
     lines.append(_rule("═"))
-    lines.append(f"{BOLD}  URL SCANNER v2 REPORT{RESET}")
+    lines.append(f"{BOLD} HAWKEYES THREAT INTELLIGENCE REPORT{RESET}")
     lines.append(_rule("═"))
     lines.append(f"  Input:  {BOLD}{result.get('input_url', parsed['original_url'])}{RESET}")
     if redirect.get("was_redirected"):

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-CLI entry point for URL Scanner v2.
-Run comprehensive security analysis and print the report straight to the terminal.
+CLI entry point for HawkEyes.
+Autonomous URL Threat Intelligence, Phishing Detection & Risk Scoring Engine.
 
 Usage:
-    python scan.py <url>
+    python scan.py                           # launch HawkEyes interactive console
+    python scan.py <url>                     # quick scan with terminal report
     python scan.py <url> --graph             # also print the ASCII Threat Relationship Graph
-    python scan.py <url> --graph-html threat.html # export interactive HTML visual graph
+    python scan.py <url> --graph-html file   # export interactive HTML visual threat graph
     python scan.py <url> --full-scan         # extended analysis: polls VT (up to 60s) & urlscan.io (up to 45s)
     python scan.py <url> --scan              # also run live urlscan.io (~30s)
     python scan.py <url> --json              # raw JSON instead of formatted report
@@ -43,6 +44,29 @@ except ImportError:
     pass
 
 
+def print_banner(use_color: bool = True):
+    CYAN = "\033[96m" if use_color else ""
+    BOLD = "\033[1m" if use_color else ""
+    GRAY = "\033[90m" if use_color else ""
+    GREEN = "\033[92m" if use_color else ""
+    YELLOW = "\033[93m" if use_color else ""
+    RESET = "\033[0m" if use_color else ""
+
+    banner = f"""{CYAN}{BOLD}
+  ██╗  ██╗ █████╗ ██╗    ██╗██╗  ██╗███████╗██╗   ██╗███████╗███████╗
+  ██║  ██║██╔══██╗██║    ██║██║ ██╔╝██╔════╝╚██╗ ██╔╝██╔════╝██╔════╝
+  ███████║███████║██║ █╗ ██║█████═╝ █████╗   ╚████╔╝ █████╗  ███████╗
+  ██╔══██║██╔══██║██║███╗██║██╔═██╗ ██╔══╝    ╚██╔╝  ██╔══╝  ╚════██║
+  ██║  ██║██║  ██║╚███╔███╔╝██║ ╚██╗███████╗   ██║   ███████╗███████║
+  ╚═╝  ╚═╝╚═╝  ╚═╝ ╚══╝╚══╝ ╚═╝  ╚═╝╚══════╝   ╚═╝   ╚══════╝╚══════╝{RESET}
+  {GRAY}┌─────────────────────────────────────────────────────────────────┐{RESET}
+  {GRAY}│{RESET}  {YELLOW}H A W K E Y E S{RESET} {GRAY}:: Advanced URL Threat Intelligence Radar{RESET}  {GRAY}│{RESET}
+  {GRAY}│{RESET}  {GREEN}Autonomous Threat Hunting, Phishing & Fraud Engine{RESET}       {GRAY}│{RESET}
+  {GRAY}└─────────────────────────────────────────────────────────────────┘{RESET}
+"""
+    print(banner)
+
+
 def _mask(key: str) -> str:
     if len(key) <= 8:
         return "*" * len(key)
@@ -57,7 +81,7 @@ def check_keys():
         "URLHAUS_API_KEY": (0, "URLhaus API Key (optional, abuse.ch)"),
     }
 
-    print("Checking which threat intelligence API keys this scanner can see:\n")
+    print("Checking which threat intelligence API keys HawkEyes can see:\n")
     for name, (expected_len, desc) in expectations.items():
         value = os.environ.get(name, "")
         if not value:
@@ -73,7 +97,7 @@ def check_keys():
             print(f"                           ⚠ expected ~{expected_len} characters, got {len(value)}")
 
     print(
-        "\nNote: The scanner works offline and with free endpoints without keys,"
+        "\nNote: HawkEyes works offline and with free public endpoints without keys,"
         "\nbut setting VT_API_KEY and SAFE_BROWSING_API_KEY unlocks full multi-engine coverage."
     )
 
@@ -112,7 +136,13 @@ def handle_history_commands(args) -> bool:
     if args.history_show is not None:
         rec = get_scan(args.history_show)
         if not rec:
-            print(f"Scan #{args.history_show} not found in history.")
+            print(f"Scan #{args.history_show} not found in history.\n")
+            recent = list_scans(limit=10)
+            if recent:
+                print("Available recent scans in database:")
+                print(format_history_table(recent, use_color=is_tty))
+            else:
+                print("The database currently has no saved scans.")
             sys.exit(1)
         data = rec.get("data", {})
         if args.json:
@@ -123,8 +153,8 @@ def handle_history_commands(args) -> bool:
             print(format_report_plain(data))
         return True
 
-    if args.history:
-        limit = args.history_limit or 20
+    if args.history is not None or args.history_limit is not None:
+        limit = args.history if (isinstance(args.history, int) and args.history > 0) else (args.history_limit or 20)
         results = list_scans(limit=limit)
         print(f"\nRecent Scan History (last {len(results)} scans):\n")
         print(format_history_table(results, use_color=is_tty))
@@ -134,14 +164,153 @@ def handle_history_commands(args) -> bool:
     return False
 
 
+def run_interactive(args):
+    """Interactive CLI investigation console launched when scan.py is called with no arguments."""
+    is_tty = sys.stdout.isatty() and not args.no_color
+    print_banner(use_color=is_tty)
+    print("  [ HawkEyes Interactive Threat Investigation Console ]\n")
+
+    while True:
+        try:
+            print("  Enter target URL (or 'h' for history, 'k' for keys, 'q' to exit):")
+            url_input = input("  hawk-eyes> ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\n  Exiting HawkEyes.")
+            break
+
+        if not url_input:
+            continue
+        if url_input.lower() in ("q", "quit", "exit"):
+            print("  Exiting HawkEyes.")
+            break
+        if url_input.lower() in ("h", "history"):
+            from history import list_scans, format_history_table
+            scans = list_scans(limit=args.history_limit or 20)
+            print(f"\nRecent Scan History (last {len(scans)} scans):\n")
+            print(format_history_table(scans, use_color=is_tty))
+            print()
+            continue
+        if url_input.lower() in ("k", "keys"):
+            check_keys()
+            print()
+            continue
+
+        # Format URL scheme if missing
+        clean_url = url_input
+        if not clean_url.startswith(("http://", "https://")):
+            clean_url = "https://" + clean_url
+
+        print(f"\n  Target: {clean_url}")
+        print("  Select Scan Mode:")
+        print("    [1] Standard Threat Scan    - Fast: Heuristics, DNS, TLS, WHOIS, CT, Phishing, URLhaus")
+        print("    [2] Deep Security Scan      - Standard + ASCII Threat Graph + VT Wait (Recommended)")
+        print("    [3] Comprehensive Sandbox   - Live sandboxed execution (urlscan.io) + Extended VT (~30-45s)")
+        print("    [4] Threat Graph Visualizer - Standard scan + exports interactive visual HTML graph")
+        print("    [5] Quick Recon             - Instant offline analysis (heuristics, typosquatting, homoglyphs)")
+
+        try:
+            mode_choice = input("  Select mode [1-5] (default: 2): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\n  Exiting HawkEyes.")
+            break
+
+        if not mode_choice:
+            mode_choice = "2"
+
+        use_urlscan = False
+        follow_redirects = True
+        vt_max_wait = 25.0
+        urlscan_max_wait = 30.0
+        show_graph = False
+        export_html = None
+
+        if mode_choice == "1":
+            vt_max_wait = 0.0
+            show_graph = False
+        elif mode_choice == "2":
+            vt_max_wait = 25.0
+            show_graph = True
+        elif mode_choice == "3":
+            use_urlscan = True
+            vt_max_wait = 60.0
+            urlscan_max_wait = 45.0
+            show_graph = True
+        elif mode_choice == "4":
+            vt_max_wait = 25.0
+            show_graph = True
+            export_html = "hawkeyes_threat_graph.html"
+        elif mode_choice == "5":
+            vt_max_wait = 0.0
+            show_graph = False
+            follow_redirects = False
+        else:
+            vt_max_wait = 25.0
+            show_graph = True
+
+        print(f"\n  [+] Launching HawkEyes inspection against: {clean_url} ...\n")
+        from pipeline import run_pipeline
+        from report import format_report, format_report_plain
+        from threat_graph import format_threat_graph_ascii, export_threat_graph_html
+        from history import save_scan
+
+        result = run_pipeline(
+            clean_url,
+            use_urlscan=use_urlscan,
+            follow_redirects=follow_redirects,
+            vt_max_wait=vt_max_wait,
+            urlscan_max_wait=urlscan_max_wait,
+        )
+
+        sid = None
+        if not args.no_history:
+            try:
+                sid = save_scan(result)
+            except Exception:
+                pass
+
+        report_text = format_report(result) if is_tty else format_report_plain(result)
+        print(report_text)
+
+        if show_graph:
+            tg = result.get("threat_graph", {})
+            print()
+            print(format_threat_graph_ascii(tg, use_color=is_tty))
+
+        if export_html:
+            export_threat_graph_html(result.get("threat_graph", {}), export_html)
+            print(f"\n  [+] Exported interactive visual threat graph to: {export_html}")
+
+        if sid:
+            print(f"\n  [i] Scan result recorded to database as Scan #{sid}")
+
+        print("\n  " + "─" * 68)
+        try:
+            another = input("  Investigate another URL? (y/N) [N]: ").strip().lower()
+            print()
+            if another not in ("y", "yes"):
+                print("  Thank you for using HawkEyes.\n")
+                break
+        except (KeyboardInterrupt, EOFError):
+            print("\n  Exiting HawkEyes.\n")
+            break
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Scan a URL and print a comprehensive risk report.")
-    parser.add_argument("url", nargs="?", help="The URL to scan")
+    parser = argparse.ArgumentParser(description="HawkEyes — Autonomous URL Threat Intelligence & Phishing Hunter.")
+    parser.add_argument("url", nargs="?", help="The URL to scan (omit to launch interactive console)")
 
     # API Keys & History commands
     parser.add_argument("--check-keys", action="store_true", help="Show detected API keys and exit")
-    parser.add_argument("--history", action="store_true", help="Display recent scan history")
-    parser.add_argument("--history-limit", type=int, default=20, help="Number of history rows to list (default: 20)")
+    parser.add_argument(
+        "--history",
+        nargs="?",
+        const=20,
+        type=int,
+        default=None,
+        metavar="LIMIT",
+        help="Display recent scan history (optional: number of entries, e.g. --history 10)",
+    )
+    parser.add_argument("--history-limit", type=int, default=None, help="Number of history rows to list")
     parser.add_argument("--history-show", type=int, metavar="ID", help="Show full report for a previous scan ID")
     parser.add_argument("--history-search", type=str, metavar="QUERY", help="Search history by URL, domain, or verdict")
     parser.add_argument("--history-clear", action="store_true", help="Wipe all scan history records")
@@ -173,8 +342,10 @@ def main():
     if handle_history_commands(args):
         return
 
+    # If no URL is given, launch the interactive HawkEyes console
     if not args.url:
-        parser.error("the following arguments are required: url (unless using --check-keys or --history)")
+        run_interactive(args)
+        return
 
     from pipeline import run_pipeline
     from report import format_report, format_report_plain
@@ -220,6 +391,11 @@ def main():
         return
 
     is_tty = sys.stdout.isatty() and not args.no_color
+
+    # Print decorative banner for terminal users
+    if is_tty:
+        print_banner(use_color=True)
+
     if is_tty:
         report_text = format_report(result)
     else:

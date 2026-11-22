@@ -221,7 +221,7 @@ def format_threat_graph_ascii(graph: dict, use_color: bool = True) -> str:
     edges = graph.get("edges", [])
 
     lines = []
-    lines.append(f"{BOLD}{CYAN}THREAT RELATIONSHIP GRAPH{RESET}")
+    lines.append(f"{BOLD}{CYAN}HAWKEYES THREAT RELATIONSHIP GRAPH{RESET}")
     lines.append(GRAY + "─" * 70 + RESET)
 
     # Group connections by source node
@@ -308,7 +308,7 @@ def export_threat_graph_dot(graph: dict) -> str:
     return "\n".join(lines)
 
 
-def export_threat_graph_html(graph: dict, output_file: str, title: str = "Threat Relationship Graph") -> str:
+def export_threat_graph_html(graph: dict, output_file: str, title: str = "HawkEyes Threat Relationship Graph") -> str:
     """
     Generates a standalone, beautiful interactive HTML graph with force-directed
     physics, zoom, pan, node dragging, and inspection panel.
@@ -423,7 +423,7 @@ def export_threat_graph_html(graph: dict, output_file: str, title: str = "Threat
 </head>
 <body>
   <header>
-    <h1>&#x1F6E1;&#xFE0F; URL Scanner - Threat Relationship Graph</h1>
+    <h1>&#x1F985;&#xFE0F; HawkEyes &mdash; Interactive Threat Relationship Graph</h1>
     <div>
       <span class="badge" id="stat-nodes">0 Nodes</span>
       <span class="badge" id="stat-edges">0 Edges</span>
